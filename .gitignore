@@ -6,3 +6,10 @@ dist/
 data/
 .DS_Store
 .vite/
+
+# Stray tsc emit beside sources. The client is bundled by Vite and the server
+# emits to server/dist, so a .js next to a .ts/.tsx is always an accident.
+client/src/**/*.js
+client/vite.config.js
+shared/*.js
+tools/*.js

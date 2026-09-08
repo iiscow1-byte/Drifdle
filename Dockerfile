@@ -32,6 +32,7 @@ RUN npm ci --omit=dev && npm cache clean --force
 # Compiled server, built client, and the schema (inlined in the JS bundle).
 COPY --from=build /app/server/dist ./server/dist
 COPY --from=build /app/client/dist ./client/dist
+COPY --from=build /app/scripts ./scripts
 
 # Fallback location when no volume is attached. Railway sets
 # RAILWAY_VOLUME_MOUNT_PATH when one is, and the app moves the database there.

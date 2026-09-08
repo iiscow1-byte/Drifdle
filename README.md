@@ -262,3 +262,43 @@ of gesturing vaguely. The whole space is a 40KB file you can read and edit.
 a seeded RNG *and* on which words are already on the board, so replaying the same
 guesses through a fresh `Round` reproduces the puzzle exactly — every drift
 included — with no serialisation format to keep in sync as the engine changes.
+
+---
+
+## Troubleshooting a deploy
+
+### `sh: vite: not found` (exit code 127), looping in `/app/client`
+
+The platform is running the **client's dev server** instead of the built app.
+`vite` is a devDependency, so it does not exist in a production install — the
+missing binary is a symptom, not the cause.
+
+Driftle is an npm workspace monorepo that deploys as **one service from the
+repository root**. The client is a static bundle the API process serves; it is
+not a service of its own. Check, in order:
+
+1. **Railway → your service → Settings → Deploy → Custom Start Command.**
+   It must be `npm start`, or empty so the Dockerfile's `CMD` is used. If it
+   says `npm run dev`, that is the bug — `dev` runs Vite, which only exists in
+   development.
+2. **Settings → Source → Root Directory.** It must be the repository root, not
+   `client`. Rooted at `client`, a builder finds no `start` script and falls
+   back to `dev`.
+3. **Settings → Build → Builder.** `railway.json` asks for `DOCKERFILE`. A
+   dashboard override wins over the file.
+
+Guards are in place so this fails loudly rather than looping: running the client
+as a service now prints what to change instead of a missing-binary error, and
+`npm start` builds the app itself if the platform skipped the build step.
+
+### Accounts disappear after a deploy
+
+No volume is attached, so the SQLite file lives on the container filesystem.
+Railway → your service → **Data → Add Volume**. The database moves onto it
+automatically at the next boot; nothing to configure.
+
+### `SESSION_SECRET is not set` warning in production
+
+Harmless by default — a secret is generated and stored next to the database, so
+sessions survive restarts. Set `SESSION_SECRET` explicitly if you ever rebuild
+or move the volume, since a new secret signs everyone out.
