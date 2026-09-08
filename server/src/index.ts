@@ -46,8 +46,16 @@ function main() {
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
 
+  // A rejected promise is usually one request going wrong, so log and carry on.
   process.on('unhandledRejection', (err) => console.error('[driftle] unhandled rejection', err));
-  process.on('uncaughtException', (err) => console.error('[driftle] uncaught exception', err));
+
+  // An uncaught exception is different: the process is in an unknown state, and
+  // staying alive means a container that looks up but cannot serve (a failed
+  // `listen` being the obvious case). Exit and let the platform restart us.
+  process.on('uncaughtException', (err) => {
+    console.error('[driftle] uncaught exception — exiting so the platform can restart', err);
+    process.exit(1);
+  });
 }
 
 main();

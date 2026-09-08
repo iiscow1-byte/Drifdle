@@ -8,10 +8,11 @@
  * builds it first if a platform skipped the build step, and if it genuinely
  * cannot run, it says exactly what is wrong and what to do about it.
  */
-import { spawn, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { NPM, runNode } from './lib.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const entry = join(root, 'server', 'dist', 'server', 'src', 'index.js');
@@ -38,11 +39,7 @@ if (!existsSync(entry)) {
 
   // A platform ran the start command without running the build. Recover.
   console.log('[start] No build found — building now (this should have happened at build time).');
-  const build = spawnSync('npm', ['run', 'build'], {
-    cwd: root,
-    stdio: 'inherit',
-    shell: process.platform === 'win32',
-  });
+  const build = spawnSync(NPM, ['run', 'build'], { cwd: root, stdio: 'inherit' });
   if (build.status !== 0 || !existsSync(entry)) {
     fail([
       'The build failed, so there is nothing to run.',
@@ -60,17 +57,5 @@ if (process.env.SERVE_CLIENT !== 'false' && !existsSync(clientIndex)) {
   );
 }
 
-const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', entry], {
-  cwd: root,
-  stdio: 'inherit',
-  env: process.env,
-});
-
-// Forward shutdown signals so the platform's graceful stop reaches the server.
-for (const signal of ['SIGTERM', 'SIGINT']) {
-  process.on(signal, () => child.kill(signal));
-}
-child.on('exit', (code, signal) => {
-  if (signal) process.kill(process.pid, signal);
-  else process.exit(code ?? 0);
-});
+// Signals are forwarded by runNode so a platform's graceful stop reaches the server.
+runNode(entry, { cwd: root, nodeArgs: ['--disable-warning=ExperimentalWarning'] });

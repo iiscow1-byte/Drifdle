@@ -2,37 +2,28 @@
 /**
  * Development entrypoint — with a production safety net.
  *
- * Locally this is just `concurrently` running the API and the Vite client, and
- * behaves exactly as it always has.
+ * Locally this runs the API and the Vite client side by side, exactly as
+ * before.
  *
- * The safety net exists because `npm run dev` is a very easy thing to leave in
- * a platform's start command by accident, and the resulting failure is opaque:
+ * The safety net exists because `npm run dev` is an easy thing to leave in a
+ * platform's start command by accident, and the resulting failure is opaque:
  * dev tooling lives in devDependencies, which production installs omit, so the
- * container dies on `vite: not found` and restart-loops forever. Rather than
- * fail in a way nobody can read, we notice we are in production, say plainly
- * what is misconfigured, and run the real server instead.
+ * container dies on a missing binary and restart-loops forever. Rather than
+ * fail unreadably, we notice we are in production, say plainly what is
+ * misconfigured, and run the real server instead.
  */
-import { spawn } from 'node:child_process';
-import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isInstalled, resolveBin, runNode } from './lib.mjs';
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const require = createRequire(join(root, 'package.json'));
-
-function hasDevTooling() {
-  try {
-    require.resolve('concurrently');
-    require.resolve('vite');
-    return true;
-  } catch {
-    return false;
-  }
-}
+const here = dirname(fileURLToPath(import.meta.url));
+const root = resolve(here, '..');
+const self = import.meta.url;
 
 const inProduction = process.env.NODE_ENV === 'production';
+const hasDevTooling = isInstalled('concurrently', self) && isInstalled('vite', self);
 
-if (inProduction || !hasDevTooling()) {
+if (inProduction || !hasDevTooling) {
   console.warn(
     [
       '',
@@ -47,32 +38,10 @@ if (inProduction || !hasDevTooling()) {
       '',
     ].join('\n'),
   );
-
-  const child = spawn(process.execPath, [join(root, 'scripts', 'start.mjs')], {
-    cwd: root,
-    stdio: 'inherit',
-    env: process.env,
-  });
-  for (const signal of ['SIGTERM', 'SIGINT']) {
-    process.on(signal, () => child.kill(signal));
-  }
-  child.on('exit', (code, signal) => {
-    if (signal) process.kill(process.pid, signal);
-    else process.exit(code ?? 0);
-  });
+  runNode(join(here, 'start.mjs'), { cwd: root });
 } else {
-  const child = spawn(
-    'npm',
-    ['exec', '--', 'concurrently', '-n', 'server,client', '-c', 'cyan,magenta', 'npm:dev:server', 'npm:dev:client'],
-    {
-      cwd: root,
-      stdio: 'inherit',
-      env: process.env,
-      shell: process.platform === 'win32',
-    },
-  );
-  for (const signal of ['SIGTERM', 'SIGINT']) {
-    process.on(signal, () => child.kill(signal));
-  }
-  child.on('exit', (code) => process.exit(code ?? 0));
+  runNode(resolveBin('concurrently', self), {
+    cwd: root,
+    args: ['-n', 'server,client', '-c', 'cyan,magenta', 'npm:dev:server', 'npm:dev:client'],
+  });
 }
