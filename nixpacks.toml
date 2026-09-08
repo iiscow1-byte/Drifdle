@@ -1,0 +1,14 @@
+# Only used if you switch the Railway builder from Dockerfile to Nixpacks.
+# Node 24 is mandatory: node:sqlite is unflagged only from 23.4 onward.
+providers = ["node"]
+
+[variables]
+NIXPACKS_NODE_VERSION = "24"
+NODE_ENV = "production"
+SERVE_CLIENT = "true"
+
+[phases.build]
+cmds = ["npm run build"]
+
+[start]
+cmd = "npm start"
