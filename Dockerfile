@@ -33,6 +33,8 @@ RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/server/dist ./server/dist
 COPY --from=build /app/client/dist ./client/dist
 COPY --from=build /app/scripts ./scripts
+# The semantic space. Compiled JS alone is not enough to boot.
+COPY --from=build /app/server/src/game/lexicon/data ./server/src/game/lexicon/data
 
 # Fallback location when no volume is attached. Railway sets
 # RAILWAY_VOLUME_MOUNT_PATH when one is, and the app moves the database there.

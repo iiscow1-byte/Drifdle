@@ -3,7 +3,7 @@ dist/
 .env
 .env.local
 *.log
-data/
+/data/          # the runtime SQLite database, at the repo root only
 .DS_Store
 .vite/
 
@@ -13,3 +13,7 @@ client/src/**/*.js
 client/vite.config.js
 shared/*.js
 tools/*.js
+
+# The generated lexicon IS committed: it is the game content, and the
+# builder needs the 35MB wordnet-db devDependency that production omits.
+!server/src/game/lexicon/data/lexicon.bin

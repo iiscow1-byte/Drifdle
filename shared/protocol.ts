@@ -39,18 +39,20 @@ export const BAND_ORDER: Band[] = [
 /** Letter feedback for one character of a guess. */
 export type Mark = 'hit' | 'near' | 'miss' | 'hidden';
 
-/** The ten semantic axes the compass can point along. */
+/**
+ * The axes the compass can point along. Each is derived from WordNet's
+ * lexicographer files, so "the answer is more abstract" is a claim the engine
+ * can actually justify rather than a hand-tuned guess.
+ */
 export type Axis =
   | 'concrete'
   | 'animate'
-  | 'size'
   | 'human'
   | 'natural'
   | 'motion'
-  | 'valence'
-  | 'intensity'
+  | 'temporal'
   | 'tech'
-  | 'temporal';
+  | 'specificity';
 
 export interface Compass {
   axis: Axis;
@@ -78,6 +80,32 @@ export interface PublicGuess {
   revealed: boolean;
 }
 
+/**
+ * What the engine can tell you about a guess beyond its rank.
+ *
+ * These are the "why" behind the number, and they unlock progressively as you
+ * close in — see UNLOCK_FRACTIONS on the server.
+ */
+export interface GuessInsight {
+  /**
+   * The sense of YOUR OWN word the engine scored. Always present, because
+   * knowing the engine read "bank" as a riverbank is the difference between a
+   * fair puzzle and a frustrating one.
+   */
+  sense?: string;
+  /** Part of speech of that sense, e.g. "noun". */
+  pos?: string;
+  /**
+   * The most specific concept your guess and the answer share, e.g.
+   * "both are kinds of carnivore". The single most useful hint in the game.
+   */
+  link?: string;
+  /** The answer's broad category, e.g. "animals". */
+  domain?: string;
+  /** The answer's definition, with its own words blanked out. */
+  definition?: string;
+}
+
 /** The extra detail only the guesser gets. */
 export interface PrivateGuess extends PublicGuess {
   rank: number;
@@ -86,11 +114,20 @@ export interface PrivateGuess extends PublicGuess {
   /** Target length, revealed once you have been near enough. */
   targetLength?: number;
   compass?: Compass;
+  insight: GuessInsight;
   /** Which unlock tiers this guess earned. */
   unlocks: Unlock[];
 }
 
-export type Unlock = 'length' | 'hits' | 'nears' | 'initial';
+export type Unlock =
+  | 'compass'
+  | 'link'
+  | 'domain'
+  | 'length'
+  | 'definition'
+  | 'hits'
+  | 'nears'
+  | 'initial';
 
 export interface Player {
   id: string;
@@ -162,9 +199,22 @@ export interface DriftEvent {
   headline: string;
 }
 
+/** A word plus what it means, for the end-of-round reveal. */
+export interface Revealed {
+  word: string;
+  definition: string;
+  domain: string;
+}
+
 export interface RoundSummary {
   round: number;
   target: string;
+  /** The answer's definition, revealed when the round ends. */
+  definition?: string;
+  /** The drift chain with definitions, so players learn the space. */
+  chainDetail?: Revealed[];
+  /** The answer's nearest neighbours, revealed when the round ends. */
+  neighbourhood?: string[];
   winnerId: string | null;
   winnerName: string | null;
   drifts: number;
@@ -344,6 +394,10 @@ export interface DailyState {
   drifts: DriftEvent[];
   chain?: string[];
   target?: string;
+  /** Present once the answer is revealed. */
+  definition?: string;
+  chainDetail?: Revealed[];
+  neighbourhood?: string[];
   startedAt: number;
   solvedAt?: number | null;
   targetLengthKnown: number | null;

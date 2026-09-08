@@ -22,10 +22,12 @@
     "test:sim": "node --disable-warning=ExperimentalWarning --experimental-strip-types tools/sim-round.ts",
     "test:e2e": "node --disable-warning=ExperimentalWarning --experimental-strip-types tools/e2e-multiplayer.ts",
     "test": "npm run typecheck && npm run check:lexicon && npm run test:sim",
-    "start:direct": "npm run start --workspace server"
+    "start:direct": "npm run start --workspace server",
+    "build:lexicon": "node tools/build-lexicon.mjs"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",
-    "typescript": "^5.7.3"
+    "typescript": "^5.7.3",
+    "wordnet-db": "^3.1.14"
   }
 }

@@ -1,254 +1,505 @@
-import type { Axis, Band, Compass, Mark } from '../../../../shared/protocol.ts';
-import { GROUPS, type RawGroup, type ScalarKey } from './words.ts';
+import { gunzipSync } from 'node:zlib';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import type { Axis, Band, Compass, GuessInsight, Mark, Revealed } from '../../../../shared/protocol.ts';
+import { AXES, AXIS_PHRASES, domainAt } from './domains.ts';
+
+/**
+ * Driftle's semantic space, built from WordNet 3.1.
+ *
+ * A word is represented by the set of synsets it belongs to plus every
+ * hypernym above them — so `wolf` carries {wolf, canine, carnivore, placental,
+ * mammal, ... entity}. Those features are idf-weighted, which means sharing
+ * `carnivore` counts enormously and sharing `entity` counts for nothing.
+ *
+ * The payoff over a bag of embeddings is that proximity is *explainable*: the
+ * most specific feature two words share is a real English concept, so the game
+ * can tell you "both are kinds of carnivore" instead of "0.71 similar".
+ */
 
 /* ------------------------------------------------------------------ */
-/* Building the space                                                  */
+/* Load                                                                */
 /* ------------------------------------------------------------------ */
 
-const SCALAR_KEYS: ScalarKey[] = ['co', 'an', 'sz', 'hu', 'na', 'mo', 'va', 'it', 'te', 'tm'];
+const here = dirname(fileURLToPath(import.meta.url));
 
-const AXIS_OF: Record<ScalarKey, Axis> = {
-  co: 'concrete',
-  an: 'animate',
-  sz: 'size',
-  hu: 'human',
-  na: 'natural',
-  mo: 'motion',
-  va: 'valence',
-  it: 'intensity',
-  te: 'tech',
-  tm: 'temporal',
-};
+function readPack(): Buffer {
+  // The .bin sits beside the source in dev and beside the compiled output after
+  // a build, because tsc does not copy assets.
+  const candidates = [
+    join(here, 'data', 'lexicon.bin'),
+    join(here, '../../../../server/src/game/lexicon/data/lexicon.bin'),
+    join(process.cwd(), 'server/src/game/lexicon/data/lexicon.bin'),
+  ];
+  for (const path of candidates) {
+    try {
+      return readFileSync(path);
+    } catch {
+      /* try the next one */
+    }
+  }
+  throw new Error(
+    'lexicon.bin not found. Generate it with `npm run build:lexicon` (needs the wordnet-db devDependency).',
+  );
+}
 
-/** How the compass phrases each axis. [when target is lower, when higher] */
-const AXIS_PHRASES: Record<Axis, [string, string]> = {
-  concrete: ['the answer is more abstract', 'the answer is more physical'],
-  animate: ['the answer is less alive', 'the answer is more alive'],
-  size: ['the answer is smaller', 'the answer is bigger'],
-  human: ['the answer is further from people', 'the answer is closer to people'],
-  natural: ['the answer is more man-made', 'the answer is more natural'],
-  motion: ['the answer is more still', 'the answer moves more'],
-  valence: ['the answer is darker', 'the answer is warmer'],
-  intensity: ['the answer is calmer', 'the answer is more intense'],
-  tech: ['the answer is older than machines', 'the answer is more technological'],
-  temporal: ['the answer is more of a thing', 'the answer is more of an event'],
-};
+interface Pack {
+  words: string[];
+  glosses: string[];
+  wordSynOffsets: Uint32Array;
+  wordSynValues: Uint32Array;
+  /** Corpus frequency of each sense, parallel to wordSynValues. */
+  wordSynTags: Uint16Array;
+  synHypOffsets: Uint32Array;
+  synHypValues: Uint32Array;
+  synLex: Uint8Array;
+  synPos: Uint8Array;
+  synHead: Uint32Array;
+  freq: Uint32Array;
+  tiers: Uint8Array;
+}
+
+function decode(): Pack {
+  const raw = gunzipSync(readPack());
+  // Copy into a fresh ArrayBuffer so typed-array views are guaranteed aligned.
+  const ab = new ArrayBuffer(raw.length);
+  const bytes = new Uint8Array(ab);
+  bytes.set(raw);
+  const view = new DataView(ab);
+
+  let at = 0;
+  const magic = Buffer.from(bytes.subarray(0, 8)).toString('ascii');
+  if (magic !== 'DRFTLX04') throw new Error(`lexicon.bin has unexpected magic "${magic}"`);
+  at = 8;
+
+  const u32 = () => {
+    const v = view.getUint32(at, true);
+    at += 4;
+    return v;
+  };
+  const align = () => {
+    at += (4 - (at % 4)) % 4;
+  };
+
+  const wordCount = u32();
+  const synsetCount = u32();
+  const wordSynLen = u32();
+  const synHypLen = u32();
+  const wordBlobLen = u32();
+  const glossBlobLen = u32();
+
+  const takeStrings = (blobLen: number, count: number): string[] => {
+    const text = Buffer.from(bytes.subarray(at, at + blobLen)).toString('utf8');
+    at += blobLen;
+    align();
+    at += (count + 1) * 4; // offsets table, unused: split is faster
+    align();
+    return text.split('\n');
+  };
+
+  const words = takeStrings(wordBlobLen, wordCount);
+  const glosses = takeStrings(glossBlobLen, synsetCount);
+
+  const takeU32 = (len: number) => {
+    const arr = new Uint32Array(ab, at, len);
+    at += len * 4;
+    return arr;
+  };
+  const takeU8 = (len: number) => {
+    const arr = new Uint8Array(ab, at, len);
+    at += len;
+    align();
+    return arr;
+  };
+  const takeU16 = (len: number) => {
+    const arr = new Uint16Array(ab, at, len);
+    at += len * 2;
+    align();
+    return arr;
+  };
+
+  const wordSynOffsets = takeU32(wordCount + 1);
+  const wordSynValues = takeU32(wordSynLen);
+  const wordSynTags = takeU16(wordSynLen);
+  const synHypOffsets = takeU32(synsetCount + 1);
+  const synHypValues = takeU32(synHypLen);
+  const synLex = takeU8(synsetCount);
+  const synPos = takeU8(synsetCount);
+  const synHead = takeU32(synsetCount);
+  const freq = takeU32(wordCount);
+  const tiers = takeU8(wordCount);
+
+  if (words.length !== wordCount) {
+    throw new Error(`lexicon.bin word count mismatch: ${words.length} vs ${wordCount}`);
+  }
+  return {
+    words,
+    glosses,
+    wordSynOffsets,
+    wordSynValues,
+    wordSynTags,
+    synHypOffsets,
+    synHypValues,
+    synLex,
+    synPos,
+    synHead,
+    freq,
+    tiers,
+  };
+}
+
+const pack = decode();
+
+export const LEXICON_SIZE = pack.words.length;
+const SYNSET_COUNT = pack.glosses.length;
+const POS_NAME = ['noun', 'verb', 'adjective', 'adverb'];
+
+const wordIndex = new Map<string, number>();
+pack.words.forEach((w, i) => wordIndex.set(w, i));
 
 export interface LexEntry {
   word: string;
   index: number;
   tier: 1 | 2 | 3;
-  group: string;
-  tags: string[];
-  scalars: Record<ScalarKey, number>;
-  vec: Float64Array;
 }
 
-const TAG_WEIGHT = 0.72;
-const SCALAR_WEIGHT = 0.28;
-/** Keeps the scalar sub-vector from collapsing to zero for a mid-valued word. */
-const SCALAR_ANCHOR = 0.35;
-
-function parseGroup(g: RawGroup): Omit<LexEntry, 'index' | 'vec'>[] {
-  const out: Omit<LexEntry, 'index' | 'vec'>[] = [];
-  const scalars = {} as Record<ScalarKey, number>;
-  for (const k of SCALAR_KEYS) scalars[k] = g.s[k] ?? 0.5;
-
-  for (const raw of g.words.split('\n')) {
-    const line = raw.trim();
-    if (!line) continue;
-    const colon = line.indexOf(':');
-    if (colon < 0) throw new Error(`lexicon: malformed entry "${line}" in group ${g.key}`);
-    let word = line.slice(0, colon).trim();
-    let tier: 1 | 2 | 3 = g.tier;
-    if (word.endsWith('!')) {
-      tier = 1;
-      word = word.slice(0, -1);
-    } else if (word.endsWith('*')) {
-      tier = 3;
-      word = word.slice(0, -1);
-    }
-    if (!/^[a-z]{3,12}$/.test(word)) {
-      throw new Error(`lexicon: bad word "${word}" in group ${g.key}`);
-    }
-    const own = line
-      .slice(colon + 1)
-      .split(',')
-      .map((t) => t.trim())
-      .filter(Boolean);
-    out.push({
-      word,
-      tier,
-      group: g.key,
-      tags: [...new Set([...g.tags, ...own, `group:${g.key}`])],
-      scalars: { ...scalars },
-    });
-  }
-  return out;
+/** Lightweight accessor; the heavy data stays in typed arrays. */
+export function entryAt(index: number): LexEntry {
+  const word = pack.words[index];
+  if (word === undefined) throw new Error(`lexicon: no entry at ${index}`);
+  return { word, index, tier: pack.tiers[index] as 1 | 2 | 3 };
 }
-
-function build(): { entries: LexEntry[]; byWord: Map<string, LexEntry> } {
-  const parsed = GROUPS.flatMap(parseGroup);
-
-  const seen = new Set<string>();
-  for (const p of parsed) {
-    if (seen.has(p.word)) throw new Error(`lexicon: duplicate word "${p.word}"`);
-    seen.add(p.word);
-  }
-
-  // Document frequency for idf weighting: a tag shared by two words is a much
-  // stronger signal than one shared by two hundred.
-  const df = new Map<string, number>();
-  for (const p of parsed) for (const t of p.tags) df.set(t, (df.get(t) ?? 0) + 1);
-
-  const tagIndex = new Map<string, number>();
-  for (const t of [...df.keys()].sort()) tagIndex.set(t, tagIndex.size);
-
-  const N = parsed.length;
-  const T = tagIndex.size;
-  const dim = T + SCALAR_KEYS.length + 1;
-
-  const entries: LexEntry[] = parsed.map((p, index) => {
-    const vec = new Float64Array(dim);
-
-    // --- tag block ---
-    let tagNorm = 0;
-    for (const t of p.tags) {
-      const idf = Math.log(N / (df.get(t) ?? 1)) + 1;
-      const i = tagIndex.get(t)!;
-      vec[i] = idf;
-      tagNorm += idf * idf;
-    }
-    tagNorm = Math.sqrt(tagNorm) || 1;
-    for (const t of p.tags) vec[tagIndex.get(t)!] *= TAG_WEIGHT / tagNorm;
-
-    // --- scalar block ---
-    let sNorm = SCALAR_ANCHOR * SCALAR_ANCHOR;
-    const sVals = SCALAR_KEYS.map((k) => p.scalars[k] - 0.5);
-    for (const v of sVals) sNorm += v * v;
-    sNorm = Math.sqrt(sNorm) || 1;
-    SCALAR_KEYS.forEach((_, i) => {
-      vec[T + i] = (sVals[i] * SCALAR_WEIGHT) / sNorm;
-    });
-    vec[T + SCALAR_KEYS.length] = (SCALAR_ANCHOR * SCALAR_WEIGHT) / sNorm;
-
-    // Final L2 pass so cosine(x, x) === 1 and similarities read as real cosines.
-    // Every word has identical block norms, so this is a uniform rescale and
-    // leaves the ranking untouched.
-    let norm = 0;
-    for (let i = 0; i < dim; i++) norm += vec[i] * vec[i];
-    norm = Math.sqrt(norm) || 1;
-    for (let i = 0; i < dim; i++) vec[i] /= norm;
-
-    return { ...p, index, vec };
-  });
-
-  const byWord = new Map(entries.map((e) => [e.word, e]));
-  return { entries, byWord };
-}
-
-const { entries: LEX, byWord: BY_WORD } = build();
-
-export const LEXICON = LEX;
-export const LEXICON_SIZE = LEX.length;
 
 export function lookup(word: string): LexEntry | undefined {
-  return BY_WORD.get(word.trim().toLowerCase());
+  const i = wordIndex.get(word.trim().toLowerCase());
+  return i === undefined ? undefined : entryAt(i);
 }
 
-export function entryAt(index: number): LexEntry {
-  const e = LEX[index];
-  if (!e) throw new Error(`lexicon: no entry at ${index}`);
-  return e;
+/** Iterating 75k entry objects is wasteful; most callers want the words. */
+export const LEXICON = {
+  get length() {
+    return LEXICON_SIZE;
+  },
+  at: entryAt,
+  words: pack.words,
+};
+
+/* ------------------------------------------------------------------ */
+/* Hypernym closures                                                   */
+/* ------------------------------------------------------------------ */
+
+/** Ancestors of each synset (including itself), with distance from it. */
+const closureCache = new Map<number, { ids: Int32Array; dist: Uint8Array }>();
+
+function closureOf(synset: number): { ids: Int32Array; dist: Uint8Array } {
+  const cached = closureCache.get(synset);
+  if (cached) return cached;
+
+  const ids: number[] = [];
+  const dist: number[] = [];
+  const seen = new Set<number>();
+  let frontier = [synset];
+  let depth = 0;
+
+  while (frontier.length && depth < 24) {
+    const next: number[] = [];
+    for (const s of frontier) {
+      if (seen.has(s)) continue;
+      seen.add(s);
+      ids.push(s);
+      dist.push(depth);
+      for (let k = pack.synHypOffsets[s]; k < pack.synHypOffsets[s + 1]; k++) {
+        const parent = pack.synHypValues[k];
+        if (!seen.has(parent)) next.push(parent);
+      }
+    }
+    frontier = next;
+    depth++;
+  }
+
+  const result = { ids: Int32Array.from(ids), dist: Uint8Array.from(dist) };
+  closureCache.set(synset, result);
+  return result;
+}
+
+/** How deep a synset sits in the hierarchy — the specificity axis. */
+const synDepth = new Uint8Array(SYNSET_COUNT);
+{
+  for (let s = 0; s < SYNSET_COUNT; s++) {
+    const c = closureOf(s);
+    synDepth[s] = Math.min(255, c.ids.length === 0 ? 0 : Math.max(...c.dist));
+  }
 }
 
 /* ------------------------------------------------------------------ */
-/* Similarity and ranking                                              */
+/* Feature vectors                                                     */
 /* ------------------------------------------------------------------ */
 
-function cosine(a: Float64Array, b: Float64Array): number {
+/**
+ * How much each sense of a word counts toward its meaning.
+ *
+ * Sense *order* alone is too gentle a signal: `thunder` has a slang sense
+ * meaning heroin, and ordering it fifth still let it drag the word toward
+ * narcotics. WordNet's tagged-corpus counts are far sharper — a sense nobody
+ * has ever been recorded using drops to the floor value, where it stays
+ * reachable without steering the word.
+ */
+const UNATTESTED_FLOOR = 0.07;
+const senseScratch = new Float64Array(128);
+
+function senseWeightsFor(word: number): Float64Array {
+  const start = pack.wordSynOffsets[word];
+  const n = Math.min(pack.wordSynOffsets[word + 1] - start, senseScratch.length);
+
+  let maxTag = 0;
+  for (let i = 0; i < n; i++) maxTag = Math.max(maxTag, pack.wordSynTags[start + i]);
+
+  for (let i = 0; i < n; i++) {
+    senseScratch[i] =
+      maxTag > 0
+        ? UNATTESTED_FLOOR + (1 - UNATTESTED_FLOOR) * (pack.wordSynTags[start + i] / maxTag)
+        : // No corpus evidence at all: fall back to WordNet's own sense order.
+          1 / (1 + 0.9 * i);
+  }
+  return senseScratch.subarray(0, n);
+}
+/** Distant ancestors are weaker evidence than immediate ones. */
+const DEPTH_DECAY = 0.82;
+
+const featureOffsets = new Uint32Array(LEXICON_SIZE + 1);
+let featureIds: Int32Array;
+let featureWeights: Float32Array;
+
+/** Inverted index: feature -> the words carrying it, for fast scoring. */
+const postingOffsets = new Uint32Array(SYNSET_COUNT + 1);
+let postingWords: Int32Array;
+let postingWeights: Float32Array;
+
+function buildVectors() {
+  const df = new Uint32Array(SYNSET_COUNT);
+
+  // Pass 1: collect raw (feature, weight) pairs and document frequencies.
+  const ids: number[] = [];
+  const weights: number[] = [];
+  const acc = new Map<number, number>();
+
+  for (let w = 0; w < LEXICON_SIZE; w++) {
+    acc.clear();
+    const start = pack.wordSynOffsets[w];
+    const senseW = senseWeightsFor(w);
+    const end = start + senseW.length;
+    for (let s = start; s < end; s++) {
+      const sw = senseW[s - start];
+      const c = closureOf(pack.wordSynValues[s]);
+      for (let k = 0; k < c.ids.length; k++) {
+        const f = c.ids[k];
+        const contribution = sw * Math.pow(DEPTH_DECAY, c.dist[k]);
+        const prev = acc.get(f);
+        if (prev === undefined || contribution > prev) acc.set(f, contribution);
+      }
+    }
+    featureOffsets[w] = ids.length;
+    for (const [f, weight] of acc) {
+      ids.push(f);
+      weights.push(weight);
+      df[f]++;
+    }
+  }
+  featureOffsets[LEXICON_SIZE] = ids.length;
+
+  featureIds = Int32Array.from(ids);
+  featureWeights = Float32Array.from(weights);
+
+  // Pass 2: apply idf and L2-normalise, so a dot product is a cosine.
+  const idf = new Float32Array(SYNSET_COUNT);
+  for (let f = 0; f < SYNSET_COUNT; f++) {
+    idf[f] = df[f] === 0 ? 0 : Math.log(LEXICON_SIZE / df[f]) + 1;
+  }
+  for (let w = 0; w < LEXICON_SIZE; w++) {
+    let norm = 0;
+    for (let k = featureOffsets[w]; k < featureOffsets[w + 1]; k++) {
+      const v = featureWeights[k] * idf[featureIds[k]];
+      featureWeights[k] = v;
+      norm += v * v;
+    }
+    norm = Math.sqrt(norm) || 1;
+    for (let k = featureOffsets[w]; k < featureOffsets[w + 1]; k++) featureWeights[k] /= norm;
+  }
+
+  // Pass 3: invert, by counting sort.
+  const counts = new Uint32Array(SYNSET_COUNT + 1);
+  for (let k = 0; k < featureIds.length; k++) counts[featureIds[k]]++;
+  let running = 0;
+  for (let f = 0; f < SYNSET_COUNT; f++) {
+    postingOffsets[f] = running;
+    running += counts[f];
+  }
+  postingOffsets[SYNSET_COUNT] = running;
+
+  postingWords = new Int32Array(running);
+  postingWeights = new Float32Array(running);
+  const fill = postingOffsets.slice();
+  for (let w = 0; w < LEXICON_SIZE; w++) {
+    for (let k = featureOffsets[w]; k < featureOffsets[w + 1]; k++) {
+      const f = featureIds[k];
+      const at = fill[f]++;
+      postingWords[at] = w;
+      postingWeights[at] = featureWeights[k];
+    }
+  }
+}
+
+const buildStart = Date.now();
+buildVectors();
+const buildMs = Date.now() - buildStart;
+
+/* ------------------------------------------------------------------ */
+/* Scoring and ranking                                                 */
+/* ------------------------------------------------------------------ */
+
+/** Skip features so common they carry almost no signal but cost a lot to walk. */
+const POSTING_SKIP = 24_000;
+
+const scratch = new Float32Array(LEXICON_SIZE);
+
+function scoreAgainst(target: number, out: Float32Array) {
+  out.fill(0);
+  for (let k = featureOffsets[target]; k < featureOffsets[target + 1]; k++) {
+    const f = featureIds[k];
+    const start = postingOffsets[f];
+    const end = postingOffsets[f + 1];
+    if (end - start > POSTING_SKIP) continue;
+    const wf = featureWeights[k];
+    for (let p = start; p < end; p++) out[postingWords[p]] += wf * postingWeights[p];
+  }
+}
+
+export function similarity(a: number, b: number): number {
+  // Sparse dot product over the smaller feature list.
+  let i = featureOffsets[a];
+  const iEnd = featureOffsets[a + 1];
+  const map = new Map<number, number>();
+  for (; i < iEnd; i++) map.set(featureIds[i], featureWeights[i]);
   let dot = 0;
-  for (let i = 0; i < a.length; i++) dot += a[i] * b[i];
+  for (let k = featureOffsets[b]; k < featureOffsets[b + 1]; k++) {
+    const other = map.get(featureIds[k]);
+    if (other !== undefined) dot += other * featureWeights[k];
+  }
   return dot;
 }
 
-export function similarity(aIndex: number, bIndex: number): number {
-  return cosine(LEX[aIndex].vec, LEX[bIndex].vec);
+interface RankTable {
+  /** 1-based rank of every word relative to the target. */
+  ranks: Int32Array;
+  /** The nearest words, target first. Capped — the tail is never needed. */
+  nearest: Int32Array;
 }
 
-/** rankOf[wordIndex] = 1-based rank of that word relative to the target. */
-const rankCache = new Map<number, Int32Array>();
-const orderCache = new Map<number, Int32Array>();
+const NEAREST_CAP = 512;
+const RANK_CACHE_LIMIT = 24;
+const rankCache = new Map<number, RankTable>();
 
-function computeRanks(targetIndex: number) {
-  const target = LEX[targetIndex].vec;
-  const scored = LEX.map((e) => ({ i: e.index, s: cosine(target, e.vec), w: e.word }));
-  scored.sort((a, b) => (b.s - a.s) || a.w.localeCompare(b.w));
+function computeRanks(target: number): RankTable {
+  scoreAgainst(target, scratch);
 
-  const ranks = new Int32Array(LEX.length);
-  const order = new Int32Array(LEX.length);
-  scored.forEach((entry, position) => {
-    ranks[entry.i] = position + 1;
-    order[position] = entry.i;
+  const order = new Int32Array(LEXICON_SIZE);
+  for (let i = 0; i < LEXICON_SIZE; i++) order[i] = i;
+
+  // Sort by score desc, then alphabetically so ties are stable across runs.
+  const scores = scratch;
+  const sorted = Array.from(order).sort((a, b) => {
+    const d = scores[b] - scores[a];
+    if (d !== 0) return d;
+    return pack.words[a] < pack.words[b] ? -1 : 1;
   });
-  rankCache.set(targetIndex, ranks);
-  orderCache.set(targetIndex, order);
+
+  const ranks = new Int32Array(LEXICON_SIZE);
+  for (let i = 0; i < sorted.length; i++) ranks[sorted[i]] = i + 1;
+
+  const nearest = Int32Array.from(sorted.slice(0, NEAREST_CAP));
+  return { ranks, nearest };
+}
+
+function tableFor(target: number): RankTable {
+  const hit = rankCache.get(target);
+  if (hit) {
+    // Refresh recency.
+    rankCache.delete(target);
+    rankCache.set(target, hit);
+    return hit;
+  }
+  const table = computeRanks(target);
+  rankCache.set(target, table);
+  if (rankCache.size > RANK_CACHE_LIMIT) {
+    const oldest = rankCache.keys().next().value;
+    if (oldest !== undefined) rankCache.delete(oldest);
+  }
+  return table;
 }
 
 export function rankOf(guessIndex: number, targetIndex: number): number {
-  if (!rankCache.has(targetIndex)) computeRanks(targetIndex);
-  return rankCache.get(targetIndex)![guessIndex];
+  return tableFor(targetIndex).ranks[guessIndex];
 }
 
-/** The word indices sorted from nearest to furthest from `targetIndex`. */
-export function orderFor(targetIndex: number): Int32Array {
-  if (!orderCache.has(targetIndex)) computeRanks(targetIndex);
-  return orderCache.get(targetIndex)!;
+/** The k nearest words to a target, nearest first (the target itself is [0]). */
+export function nearestIndices(targetIndex: number, k: number): Int32Array {
+  const nearest = tableFor(targetIndex).nearest;
+  return k >= nearest.length ? nearest : nearest.subarray(0, k);
 }
 
-/** The n nearest words, excluding the target itself. Used in the round reveal. */
 export function nearestWords(targetIndex: number, n: number): string[] {
-  const order = orderFor(targetIndex);
+  const near = nearestIndices(targetIndex, n + 1);
   const out: string[] = [];
-  for (let i = 1; i < order.length && out.length < n; i++) out.push(LEX[order[i]].word);
+  for (let i = 1; i < near.length && out.length < n; i++) out.push(pack.words[near[i]]);
   return out;
 }
 
 /* ------------------------------------------------------------------ */
-/* Bands                                                               */
+/* Bands and unlocks, as fractions so they scale with the lexicon       */
 /* ------------------------------------------------------------------ */
+
+const scaled = (fraction: number) => Math.max(1, Math.round(LEXICON_SIZE * fraction));
 
 export const BAND_CUTOFFS: { band: Band; maxRank: number }[] = [
   { band: 'exact', maxRank: 1 },
-  { band: 'burning', maxRank: 8 },
-  { band: 'hot', maxRank: 40 },
-  { band: 'warm', maxRank: 120 },
-  { band: 'cool', maxRank: 280 },
-  { band: 'cold', maxRank: 520 },
+  { band: 'burning', maxRank: scaled(0.0004) },
+  { band: 'hot', maxRank: scaled(0.0027) },
+  { band: 'warm', maxRank: scaled(0.013) },
+  { band: 'cool', maxRank: scaled(0.066) },
+  { band: 'cold', maxRank: scaled(0.33) },
   { band: 'frozen', maxRank: Number.MAX_SAFE_INTEGER },
 ];
+
 
 export function bandForRank(rank: number): Band {
   for (const c of BAND_CUTOFFS) if (rank <= c.maxRank) return c.band;
   return 'frozen';
 }
 
-/* ------------------------------------------------------------------ */
-/* Unlocks: how much spelling your semantic proximity buys you          */
-/* ------------------------------------------------------------------ */
-
 export const UNLOCK_RANKS = {
-  compass: 300,
-  length: 250,
-  hits: 120,
-  nears: 40,
-  initial: 8,
+  compass: scaled(0.4),
+  link: scaled(0.08),
+  domain: scaled(0.04),
+  length: scaled(0.025),
+  definition: scaled(0.01),
+  hits: scaled(0.008),
+  nears: scaled(0.0025),
+  initial: scaled(0.0004),
 } as const;
 
-/**
- * Wordle-style marks, but gated by how near the guess was semantically.
- * A cold guess tells you nothing about spelling; a burning one tells you a lot.
- */
+export function unlocksFor(rank: number) {
+  const list: (keyof typeof UNLOCK_RANKS)[] = [];
+  for (const key of Object.keys(UNLOCK_RANKS) as (keyof typeof UNLOCK_RANKS)[]) {
+    if (rank <= UNLOCK_RANKS[key]) list.push(key);
+  }
+  return list;
+}
+
+/* ------------------------------------------------------------------ */
+/* Letter feedback                                                     */
+/* ------------------------------------------------------------------ */
+
 export function marksFor(guess: string, target: string, rank: number): Mark[] {
   const showHits = rank <= UNLOCK_RANKS.hits;
   const showNears = rank <= UNLOCK_RANKS.nears;
@@ -265,10 +516,8 @@ export function marksFor(guess: string, target: string, rank: number): Mark[] {
       used[i] = true;
     }
   }
-  if (!showNears) {
-    // Only exact-position information is unlocked at this tier.
-    return marks.map((m) => (m === 'hit' ? 'hit' : 'hidden'));
-  }
+  if (!showNears) return marks.map((m) => (m === 'hit' ? 'hit' : 'hidden'));
+
   for (let i = 0; i < g.length; i++) {
     if (marks[i] === 'hit') continue;
     const j = t.findIndex((ch, k) => !used[k] && ch === g[i]);
@@ -280,45 +529,159 @@ export function marksFor(guess: string, target: string, rank: number): Mark[] {
   return marks;
 }
 
-export function unlocksFor(rank: number) {
-  const list: ('length' | 'hits' | 'nears' | 'initial')[] = [];
-  if (rank <= UNLOCK_RANKS.length) list.push('length');
-  if (rank <= UNLOCK_RANKS.hits) list.push('hits');
-  if (rank <= UNLOCK_RANKS.nears) list.push('nears');
-  if (rank <= UNLOCK_RANKS.initial) list.push('initial');
-  return list;
+/* ------------------------------------------------------------------ */
+/* Meaning: definitions, domains, shared concepts                      */
+/* ------------------------------------------------------------------ */
+
+function primarySynset(word: number): number | null {
+  const start = pack.wordSynOffsets[word];
+  return start < pack.wordSynOffsets[word + 1] ? pack.wordSynValues[start] : null;
+}
+
+export function definitionOf(word: number): string {
+  const s = primarySynset(word);
+  return s === null ? '' : pack.glosses[s];
+}
+
+export function posOf(word: number): string {
+  const s = primarySynset(word);
+  return s === null ? '' : POS_NAME[pack.synPos[s]] ?? '';
+}
+
+export function domainOf(word: number): string {
+  const s = primarySynset(word);
+  return s === null ? '' : domainAt(pack.synLex[s]).label;
+}
+
+export function revealedOf(word: number): Revealed {
+  return { word: pack.words[word], definition: definitionOf(word), domain: domainOf(word) };
+}
+
+const synsetName = (s: number): string | null => {
+  const head = pack.synHead[s];
+  return head === 0xffffffff ? null : pack.words[head];
+};
+
+/**
+ * The most specific concept two words share.
+ *
+ * "Most specific" means the shared ancestor with the highest idf — the one
+ * fewest other words have. That is what turns a rank into an explanation.
+ */
+export function sharedConcept(a: number, b: number): string | null {
+  const mine = new Map<number, number>();
+  for (let k = featureOffsets[a]; k < featureOffsets[a + 1]; k++) {
+    mine.set(featureIds[k], featureWeights[k]);
+  }
+
+  const shared: { feature: number; score: number }[] = [];
+  for (let k = featureOffsets[b]; k < featureOffsets[b + 1]; k++) {
+    const f = featureIds[k];
+    const other = mine.get(f);
+    if (other === undefined) continue;
+    // Both sides weight it highly => specific, and central to both meanings.
+    shared.push({ feature: f, score: Math.min(other, featureWeights[k]) });
+  }
+  shared.sort((x, y) => y.score - x.score);
+
+  // Walk down the candidates rather than giving up on the first: the strongest
+  // shared synset is often one WordNet only names with a phrase.
+  for (const { feature } of shared.slice(0, 12)) {
+    // A shared top-level concept ("entity") is technically true and useless.
+    if (postingOffsets[feature + 1] - postingOffsets[feature] > LEXICON_SIZE * 0.12) continue;
+    const name = synsetName(feature);
+    if (!name) continue;
+    if (name === pack.words[a] || name === pack.words[b]) continue;
+    return name;
+  }
+  return null;
+}
+
+/** Blank out the answer's own words so the definition hints without spoiling. */
+export function redactedDefinition(target: number): string {
+  const definition = definitionOf(target);
+  if (!definition) return '';
+  const word = pack.words[target];
+  const stem = word.length > 4 ? word.slice(0, Math.max(4, word.length - 2)) : word;
+  return definition.replace(new RegExp(`\\b${stem}[a-z]*\\b`, 'gi'), '▮▮▮');
 }
 
 /* ------------------------------------------------------------------ */
 /* Compass                                                             */
 /* ------------------------------------------------------------------ */
 
-const COMPASS_MIN_DELTA = 0.16;
+/** Axis values per word, averaged over its senses' domains. */
+const axisValues = new Float32Array(LEXICON_SIZE * AXES.length);
+{
+  for (let w = 0; w < LEXICON_SIZE; w++) {
+    const start = pack.wordSynOffsets[w];
+    const senseWeights = Float64Array.from(senseWeightsFor(w));
+    const end = start + senseWeights.length;
+    let totalWeight = 0;
+    const sums = new Float64Array(AXES.length);
 
-export function compassFor(guessIndex: number, targetIndex: number, rank: number): Compass | undefined {
-  if (rank > UNLOCK_RANKS.compass) return undefined;
-  const g = LEX[guessIndex].scalars;
-  const t = LEX[targetIndex].scalars;
-
-  let bestKey: ScalarKey | null = null;
-  let bestDelta = 0;
-  for (const k of SCALAR_KEYS) {
-    const d = t[k] - g[k];
-    if (Math.abs(d) > Math.abs(bestDelta)) {
-      bestDelta = d;
-      bestKey = k;
+    for (let s = start; s < end; s++) {
+      const synset = pack.wordSynValues[s];
+      const weight = senseWeights[s - start];
+      const domain = domainAt(pack.synLex[synset]);
+      totalWeight += weight;
+      AXES.forEach((axis, i) => {
+        const v =
+          axis === 'specificity'
+            ? Math.min(1, synDepth[synset] / 12)
+            : (domain.axes[axis] ?? 0.5);
+        sums[i] += v * weight;
+      });
+    }
+    const base = w * AXES.length;
+    for (let i = 0; i < AXES.length; i++) {
+      axisValues[base + i] = totalWeight > 0 ? sums[i] / totalWeight : 0.5;
     }
   }
-  if (!bestKey || Math.abs(bestDelta) < COMPASS_MIN_DELTA) return undefined;
+}
 
-  const axis = AXIS_OF[bestKey];
+const COMPASS_MIN_DELTA = 0.17;
+
+export function compassFor(
+  guessIndex: number,
+  targetIndex: number,
+  rank: number,
+): Compass | undefined {
+  if (rank > UNLOCK_RANKS.compass) return undefined;
+
+  const g = guessIndex * AXES.length;
+  const t = targetIndex * AXES.length;
+  let bestAxis: Axis | null = null;
+  let bestDelta = 0;
+
+  for (let i = 0; i < AXES.length; i++) {
+    const delta = axisValues[t + i] - axisValues[g + i];
+    if (Math.abs(delta) > Math.abs(bestDelta)) {
+      bestDelta = delta;
+      bestAxis = AXES[i];
+    }
+  }
+  if (!bestAxis || Math.abs(bestDelta) < COMPASS_MIN_DELTA) return undefined;
+
   const direction: 1 | -1 = bestDelta > 0 ? 1 : -1;
   return {
-    axis,
+    axis: bestAxis,
     direction,
-    strength: Math.min(1, Math.abs(bestDelta) / 0.7),
-    text: AXIS_PHRASES[axis][direction > 0 ? 1 : 0],
+    strength: Math.min(1, Math.abs(bestDelta) / 0.6),
+    text: AXIS_PHRASES[bestAxis][direction > 0 ? 1 : 0],
   };
+}
+
+/** Everything the guesser learns beyond the bare rank. */
+export function insightFor(guessIndex: number, targetIndex: number, rank: number): GuessInsight {
+  const insight: GuessInsight = {
+    sense: definitionOf(guessIndex) || undefined,
+    pos: posOf(guessIndex) || undefined,
+  };
+  if (rank <= UNLOCK_RANKS.link) insight.link = sharedConcept(guessIndex, targetIndex) ?? undefined;
+  if (rank <= UNLOCK_RANKS.domain) insight.domain = domainOf(targetIndex) || undefined;
+  if (rank <= UNLOCK_RANKS.definition) insight.definition = redactedDefinition(targetIndex) || undefined;
+  return insight;
 }
 
 /* ------------------------------------------------------------------ */
@@ -347,42 +710,56 @@ export function hashSeed(input: string): number {
   return h >>> 0;
 }
 
-function eligible(difficulty: 1 | 2 | 3): LexEntry[] {
-  return LEX.filter((e) => e.tier <= difficulty);
+/** Words eligible to be answers, by difficulty. Indexed once at boot. */
+const byTier: number[][] = [[], [], [], []];
+for (let w = 0; w < LEXICON_SIZE; w++) byTier[pack.tiers[w]].push(w);
+
+function answerPool(difficulty: 1 | 2 | 3): number[] {
+  const pool: number[] = [];
+  for (let t = 1; t <= difficulty; t++) pool.push(...byTier[t]);
+  return pool;
+}
+const poolCache = new Map<number, number[]>();
+function pooledAnswers(difficulty: 1 | 2 | 3): number[] {
+  let p = poolCache.get(difficulty);
+  if (!p) {
+    p = answerPool(difficulty);
+    poolCache.set(difficulty, p);
+  }
+  return p;
 }
 
 export function pickTarget(rng: Rng, difficulty: 1 | 2 | 3): number {
-  const pool = eligible(difficulty);
-  return pool[Math.floor(rng() * pool.length)].index;
+  const pool = pooledAnswers(difficulty);
+  return pool[Math.floor(rng() * pool.length)];
 }
 
-/** Drift lands in this rank window around the current target. */
-export const DRIFT_WINDOW = { min: 3, max: 16 };
-
 /**
- * Choose where the answer runs to. Close enough that the board's existing
- * information is still worth something, far enough that the leader loses
- * their edge.
+ * Drift lands in this rank window. Wide enough that the answer genuinely moves
+ * rather than swapping to a synonym, close enough that the board's existing
+ * information is still worth something.
  */
+export const DRIFT_WINDOW = { min: 4, max: 60 };
+
 export function driftFrom(
   currentIndex: number,
   rng: Rng,
   difficulty: 1 | 2 | 3,
   exclude: Set<number>,
 ): { index: number; similarity: number } {
-  const order = orderFor(currentIndex);
+  const near = nearestIndices(currentIndex, DRIFT_WINDOW.max + 1);
   const candidates: number[] = [];
-  for (let pos = DRIFT_WINDOW.min; pos <= DRIFT_WINDOW.max && pos < order.length; pos++) {
-    const idx = order[pos];
+
+  for (let pos = DRIFT_WINDOW.min; pos < near.length; pos++) {
+    const idx = near[pos];
     if (exclude.has(idx)) continue;
-    if (LEX[idx].tier > difficulty) continue;
+    if (pack.tiers[idx] > difficulty) continue;
     candidates.push(idx);
   }
-  // Widen the search if the neighbourhood is exhausted.
   if (candidates.length === 0) {
-    for (let pos = 1; pos < Math.min(order.length, 80); pos++) {
-      const idx = order[pos];
-      if (!exclude.has(idx) && LEX[idx].tier <= difficulty) candidates.push(idx);
+    // Neighbourhood exhausted: accept any unused near word regardless of tier.
+    for (let pos = 1; pos < near.length; pos++) {
+      if (!exclude.has(near[pos])) candidates.push(near[pos]);
     }
   }
   if (candidates.length === 0) return { index: currentIndex, similarity: 1 };
@@ -396,13 +773,11 @@ export function driftFrom(
 /* ------------------------------------------------------------------ */
 
 export function lexiconStats() {
-  const tiers = { 1: 0, 2: 0, 3: 0 } as Record<number, number>;
-  const groups = new Set<string>();
-  const tags = new Set<string>();
-  for (const e of LEX) {
-    tiers[e.tier]++;
-    groups.add(e.group);
-    for (const t of e.tags) tags.add(t);
-  }
-  return { size: LEX.length, tiers, groups: groups.size, tags: tags.size };
+  return {
+    size: LEXICON_SIZE,
+    synsets: SYNSET_COUNT,
+    tiers: { 1: byTier[1].length, 2: byTier[2].length, 3: byTier[3].length } as Record<number, number>,
+    features: featureIds.length,
+    buildMs,
+  };
 }

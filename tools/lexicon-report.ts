@@ -1,60 +1,78 @@
 /**
- * Eyeball the semantic space. Run: npm run lexicon:check
+ * Eyeball the semantic space. Run: npm run check:lexicon
  * If these neighbourhoods look wrong, the game will feel wrong.
  */
 import {
-  LEXICON,
+  LEXICON_SIZE,
   lexiconStats,
   lookup,
   nearestWords,
   rankOf,
   bandForRank,
   compassFor,
+  insightFor,
+  definitionOf,
+  domainOf,
+  sharedConcept,
   driftFrom,
   mulberry32,
+  entryAt,
+  UNLOCK_RANKS,
+  BAND_CUTOFFS,
 } from '../server/src/game/lexicon/index.ts';
 
-const stats = lexiconStats();
-console.log('lexicon:', stats);
+console.log('lexicon:', lexiconStats());
+console.log('bands:  ', BAND_CUTOFFS.map((b) => `${b.band}<=${b.maxRank === Number.MAX_SAFE_INTEGER ? 'inf' : b.maxRank}`).join(' '));
+console.log('unlocks:', JSON.stringify(UNLOCK_RANKS));
 
-const probes = ['wolf', 'ocean', 'grief', 'computer', 'bread', 'castle', 'time', 'gold', 'dragon', 'rain'];
+const probes = ['wolf', 'ocean', 'grief', 'computer', 'bread', 'castle', 'winter', 'gold', 'guitar', 'thunder'];
 console.log('\n--- nearest neighbours ---');
 for (const p of probes) {
   const e = lookup(p);
-  if (!e) {
-    console.log(`${p}: MISSING`);
-    continue;
-  }
+  if (!e) { console.log(`${p}: MISSING`); continue; }
   console.log(`${p.padEnd(10)} -> ${nearestWords(e.index, 8).join(', ')}`);
 }
 
-console.log('\n--- sample probe ranks against target "wolf" ---');
+console.log('\n--- definitions ---');
+for (const p of ['wolf', 'grief', 'guitar']) {
+  const e = lookup(p)!;
+  console.log(`  ${p.padEnd(9)} (${domainOf(e.index)}) ${definitionOf(e.index)}`);
+}
+
 const target = lookup('wolf')!;
-for (const g of ['fox', 'dog', 'forest', 'loyalty', 'moon', 'bread', 'algorithm', 'fear']) {
-  const e = lookup(g)!;
+console.log(`\n--- probes against target "wolf" (of ${LEXICON_SIZE}) ---`);
+for (const g of ['fox', 'dog', 'coyote', 'forest', 'loyalty', 'moon', 'bread', 'algorithm', 'fear']) {
+  const e = lookup(g);
+  if (!e) { console.log(`  ${g}: not in lexicon`); continue; }
   const r = rankOf(e.index, target.index);
   const c = compassFor(e.index, target.index, r);
-  console.log(`  ${g.padEnd(10)} rank ${String(r).padStart(4)}  ${bandForRank(r).padEnd(8)} ${c ? c.text : ''}`);
+  const link = sharedConcept(e.index, target.index);
+  console.log(
+    `  ${g.padEnd(10)} rank ${String(r).padStart(6)} ${bandForRank(r).padEnd(8)}` +
+      ` link=${(link ?? '-').padEnd(14)} ${c ? c.text : ''}`,
+  );
+}
+
+console.log('\n--- the hint ladder, closing in on "wolf" ---');
+for (const g of ['algorithm', 'forest', 'mammal', 'coyote', 'fox']) {
+  const e = lookup(g)!;
+  const r = rankOf(e.index, target.index);
+  const ins = insightFor(e.index, target.index, r);
+  console.log(`  ${g} (rank ${r})`);
+  if (ins.link) console.log(`     link:       both are kinds of ${ins.link}`);
+  if (ins.domain) console.log(`     domain:     the answer is in ${ins.domain}`);
+  if (ins.definition) console.log(`     definition: ${ins.definition}`);
 }
 
 console.log('\n--- drift chain from "wolf" ---');
 const rng = mulberry32(12345);
 let cur = target.index;
 const used = new Set([cur]);
-const chain = [LEXICON[cur].word];
+const chain = [entryAt(cur).word];
 for (let i = 0; i < 4; i++) {
-  const d = driftFrom(cur, rng, 3, used);
+  const d = driftFrom(cur, rng, 2, used);
   cur = d.index;
   used.add(cur);
-  chain.push(`${LEXICON[cur].word} (sim ${d.similarity.toFixed(2)})`);
+  chain.push(`${entryAt(cur).word} (sim ${d.similarity.toFixed(2)})`);
 }
 console.log('  ' + chain.join(' -> '));
-
-console.log('\n--- rank distribution sanity (target "ocean") ---');
-const oc = lookup('ocean')!;
-const buckets = new Map<string, number>();
-for (const e of LEXICON) {
-  const b = bandForRank(rankOf(e.index, oc.index));
-  buckets.set(b, (buckets.get(b) ?? 0) + 1);
-}
-console.log('  ', Object.fromEntries(buckets));
