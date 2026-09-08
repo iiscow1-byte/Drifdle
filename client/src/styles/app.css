@@ -1437,3 +1437,121 @@ a:hover {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ==================================================================
+   Hint ladder
+   Each hint is a distinct, quiet chip. The shared-concept hint is the
+   loudest because it is the most useful thing the engine can tell you.
+   ================================================================== */
+
+.hint {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 7px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text-dim);
+  padding: 3px 10px;
+  border-radius: 99px;
+  background: #0e1219;
+  border: 1px solid var(--line-soft);
+}
+.hint .k {
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  flex: none;
+}
+.hint b {
+  color: var(--text);
+  font-weight: 700;
+}
+.hint.link {
+  border-color: color-mix(in srgb, var(--band-exact) 34%, transparent);
+  background: color-mix(in srgb, var(--band-exact) 9%, #0e1219);
+  color: #e9d5ff;
+}
+.hint.link .k {
+  color: #c084fc;
+}
+.hint.compass .arrow {
+  color: var(--accent-soft);
+  font-size: 13px;
+}
+.hint.domain .k {
+  color: var(--band-cool);
+}
+.hint.definition {
+  border-radius: var(--radius-sm);
+  border-color: color-mix(in srgb, var(--band-warm) 30%, transparent);
+  background: color-mix(in srgb, var(--band-warm) 7%, #0e1219);
+  align-items: flex-start;
+  max-width: 100%;
+}
+.hint.definition .k {
+  color: var(--band-warm);
+  padding-top: 1px;
+}
+
+/* The sense of your own word that was scored — quiet, but always there. */
+.sense {
+  flex-basis: 100%;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-faint);
+  padding-left: 2px;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.sense i {
+  font-style: normal;
+  font-weight: 700;
+  color: var(--text-dim);
+  margin-right: 5px;
+}
+
+/* End-of-round reveal: the answer, what it means, and where it lived. */
+.reveal-definition {
+  margin: 10px auto 0;
+  max-width: 460px;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text-dim);
+  text-align: center;
+}
+.reveal-domain {
+  display: inline-block;
+  margin-top: 8px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--band-cool);
+}
+.chain .link .def {
+  display: block;
+  font-family: var(--font);
+  font-size: 11.5px;
+  color: var(--text-faint);
+  margin-top: 2px;
+}
+.neighbourhood {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: center;
+  margin-top: 10px;
+}
+.neighbourhood span {
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 3px 9px;
+  border-radius: 99px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  color: var(--text-dim);
+}

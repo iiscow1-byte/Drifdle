@@ -17,7 +17,7 @@ function main() {
   console.log(banner);
   for (const line of describeConfig()) console.log(`  ${line}`);
   const lex = lexiconStats();
-  console.log(`  lexicon        ${lex.size} words, ${lex.groups} groups, ${lex.tags} tags`);
+  console.log(`  lexicon        ${lex.size.toLocaleString()} words, ${lex.synsets.toLocaleString()} synsets (built in ${lex.buildMs}ms)`);
   console.log(`  today          Driftle #${puzzleNumber(todayKey())} (${todayKey()})`);
 
   for (const warning of configWarnings()) console.warn(`\n  ! ${warning}`);

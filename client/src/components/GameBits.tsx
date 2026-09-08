@@ -302,7 +302,21 @@ export function SummaryPanel({ summary }: { summary: RoundSummary }) {
       <div className="summary-target">
         <div className="label">The answer was</div>
         <div className="word">{summary.target}</div>
+        {summary.definition && <div className="reveal-definition">{summary.definition}</div>}
       </div>
+
+      {summary.neighbourhood && summary.neighbourhood.length > 0 && (
+        <>
+          <div className="faint" style={{ textAlign: 'center', fontSize: 11, letterSpacing: '0.1em', fontWeight: 800 }}>
+            WHAT LIVED NEXT TO IT
+          </div>
+          <div className="neighbourhood">
+            {summary.neighbourhood.map((w) => (
+              <span key={w}>{w}</span>
+            ))}
+          </div>
+        </>
+      )}
 
       {chain.length > 1 && (
         <>
@@ -310,12 +324,21 @@ export function SummaryPanel({ summary }: { summary: RoundSummary }) {
             IT STARTED SOMEWHERE ELSE
           </div>
           <div className="chain">
-            {chain.map((w, i) => (
-              <span key={`${w}-${i}`}>
-                {i > 0 && <span className="sep">→ </span>}
-                <span className={`link${i === chain.length - 1 ? ' final' : ''}`}>{w}</span>
-              </span>
-            ))}
+            {chain.map((w, i) => {
+              const detail = summary.chainDetail?.[i];
+              return (
+                <span key={`${w}-${i}`}>
+                  {i > 0 && <span className="sep">→ </span>}
+                  <span
+                    className={`link${i === chain.length - 1 ? ' final' : ''}`}
+                    title={detail?.definition}
+                  >
+                    {w}
+                    {detail?.definition && <span className="def">{detail.definition}</span>}
+                  </span>
+                </span>
+              );
+            })}
           </div>
         </>
       )}

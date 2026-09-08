@@ -27,7 +27,7 @@ import { DIFFICULTY_LABEL, MODE_LABEL, formatClock } from '../lib/format.ts';
 export function Play({ param, navigate }: { param?: string; navigate: (n: string, p?: string) => void }) {
   const { user, discord } = useSession();
   const [view, actions] = useRoom();
-  const [lexiconSize, setLexiconSize] = useState(768);
+  const [lexiconSize, setLexiconSize] = useState(75352);
   const [showSummary, setShowSummary] = useState(false);
   const joined = useRef<string | null>(null);
 

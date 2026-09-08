@@ -566,6 +566,9 @@ export class Room {
     const summary: RoundSummary = {
       round: this.roundIndex,
       target: round.target,
+      definition: round.definition(),
+      chainDetail: round.chainDetail(),
+      neighbourhood: round.neighbourhood(8),
       winnerId,
       winnerName: winnerId ? (this.players.get(winnerId)?.name ?? null) : null,
       drifts: round.drifts.length,

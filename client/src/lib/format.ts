@@ -10,22 +10,11 @@ export const BAND_LABEL: Record<Band, string> = {
   frozen: 'Frozen',
 };
 
-/** Rough rank ceilings, mirroring the server's cutoffs. */
-export const BAND_MAX: Record<Band, number> = {
-  exact: 1,
-  burning: 8,
-  hot: 40,
-  warm: 120,
-  cool: 280,
-  cold: 520,
-  frozen: 768,
-};
-
 /**
  * How full a guess row's heat bar is. Log-scaled, because the difference
  * between rank 3 and rank 30 matters far more than 600 versus 700.
  */
-export function heatFraction(rank: number, lexiconSize = 768): number {
+export function heatFraction(rank: number, lexiconSize = 75352): number {
   const clamped = Math.max(1, Math.min(lexiconSize, rank));
   const t = Math.log(clamped) / Math.log(lexiconSize);
   return Math.max(0.02, 1 - t);

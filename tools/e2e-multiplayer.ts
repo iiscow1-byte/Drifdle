@@ -1,6 +1,9 @@
 /**
  * End-to-end multiplayer smoke test against a running server.
  *
+ * NOTE: the bots play far faster than a human, so the server under test needs
+ * its anti-abuse limiter raised:  GUESSES_PER_MINUTE=4000 npm start
+ *
  * Signs up two accounts over HTTP, opens two websockets, plays a real match to
  * completion, and asserts the whole loop: join, lobby, countdown, guessing,
  * cooldowns, drift + rescore, Echo tokens, round end, ratings and match end.
@@ -9,7 +12,7 @@
  */
 import { WebSocket } from 'ws';
 import type { ClientMessage, ServerMessage, RoomState } from '../shared/protocol.ts';
-import { LEXICON, orderFor, lookup, entryAt } from '../server/src/game/lexicon/index.ts';
+import { chooseWord, learn, newBot, relearn, type BotKnowledge } from './bot.ts';
 
 const BASE = process.env.DRIFTLE_URL ?? 'http://localhost:3000';
 const WS_BASE = BASE.replace(/^http/, 'ws');
@@ -42,6 +45,7 @@ class Bot {
   token: string;
   state: RoomState | null = null;
   myRanks = new Map<string, number>();
+  brain: BotKnowledge = newBot();
   seen: ServerMessage['t'][] = [];
   cooldownUntil = 0;
   echoesSpent = 0;
@@ -89,12 +93,14 @@ class Bot {
         break;
       case 'you':
         this.myRanks.set(msg.guess.word, msg.guess.rank);
+        learn(this.brain, msg.guess.word, msg.guess.rank);
         if (msg.guess.rank === 1) this.solved = true;
         if (this.state) this.state = { ...this.state, board: [...this.state.board, msg.guess] };
         break;
       case 'rescore':
         this.myRanks.clear();
         for (const g of msg.yours) this.myRanks.set(g.word, g.rank);
+        relearn(this.brain, this.myRanks);
         if (this.state) this.state = { ...this.state, board: msg.board };
         break;
       case 'echo':
@@ -123,28 +129,9 @@ class Bot {
     this.ws.send(JSON.stringify(msg));
   }
 
-  /** Hill-climb from the best word this bot personally knows about. */
-  nextWord(played: Set<string>): string {
-    let bestWord: string | null = null;
-    let bestRank = Infinity;
-    for (const [w, r] of this.myRanks) {
-      if (r < bestRank) {
-        bestRank = r;
-        bestWord = w;
-      }
-    }
-    if (bestWord && bestRank <= 300) {
-      const order = orderFor(lookup(bestWord)!.index);
-      for (let pos = 1; pos < 120; pos++) {
-        const w = entryAt(order[pos]).word;
-        if (!played.has(w)) return w;
-      }
-    }
-    for (let i = 0; i < 200; i++) {
-      const w = LEXICON[Math.floor(Math.random() * LEXICON.length)].word;
-      if (!played.has(w)) return w;
-    }
-    return LEXICON.find((e) => !played.has(e.word))!.word;
+  /** Broad probes, then semantic descent — the same brain the simulator uses. */
+  nextWord(played: Set<string>): string | null {
+    return chooseWord(this.brain, played);
   }
 
   close() {
@@ -158,7 +145,7 @@ async function until(label: string, fn: () => boolean, timeoutMs = 25_000) {
   const start = Date.now();
   while (!fn()) {
     if (Date.now() - start > timeoutMs) throw new Error(`timeout waiting for: ${label}`);
-    await wait(60);
+    await wait(8);
   }
 }
 
@@ -181,15 +168,18 @@ async function main() {
       mode: 'commons',
       private: true,
       rounds: 1,
-      roundSeconds: 90,
-      maxDrifts: 3,
-      difficulty: 2,
+      roundSeconds: 240,
+      // One drift, fired early by the hair-trigger setting: enough to exercise
+      // drift + rescore over the wire, after which the answer anchors and the
+      // bots can actually close it out inside the test's budget.
+      maxDrifts: 1,
+      difficulty: 1,
       // Hair-trigger, so the drift + rescore path is exercised on every run
       // rather than only when the bots happen to converge slowly.
       driftSensitivity: 3,
       // The default 6s cooldown is right for humans and far too slow for a
       // test: the bots need enough guesses to actually converge.
-      baseCooldownMs: 250,
+      baseCooldownMs: 60,
     },
   });
   await until('alice in a room', () => alice.state !== null);
@@ -214,7 +204,7 @@ async function main() {
 
   const played = new Set<string>();
   let echoTried = false;
-  const deadline = Date.now() + 80_000;
+  const deadline = Date.now() + 170_000;
 
   while (
     alice.state?.phase === 'playing' &&
@@ -227,9 +217,10 @@ async function main() {
       if (Date.now() < bot.cooldownUntil) continue;
 
       const word = bot.nextWord(played);
+      if (!word) continue;
       played.add(word);
       bot.send({ t: 'guess', word });
-      await wait(90);
+      await wait(22);
 
       // Once there is something to Echo, Bob buys a rank from Alice.
       if (!echoTried && bot === bob) {
@@ -255,10 +246,10 @@ async function main() {
   check('board was rescored', alice.seen.includes('rescore'));
   check('cooldowns were issued', alice.seen.includes('cooldown'));
 
-  await until('round ended', () => alice.seen.includes('roundEnd'), 15_000);
+  await until('round ended', () => alice.seen.includes('roundEnd'), 90_000);
   check('roundEnd delivered to both', alice.seen.includes('roundEnd') && bob.seen.includes('roundEnd'));
 
-  await until('match ended', () => alice.seen.includes('matchEnd'), 15_000);
+  await until('match ended', () => alice.seen.includes('matchEnd'), 30_000);
   check('matchEnd delivered to both', alice.seen.includes('matchEnd') && bob.seen.includes('matchEnd'));
 
   // Ratings should have moved for a two-player match.

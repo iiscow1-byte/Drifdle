@@ -4,21 +4,26 @@ import type {
   DriftEvent,
   PrivateGuess,
   PublicGuess,
+  Revealed,
 } from '../../../shared/protocol.ts';
 import {
   LEXICON,
   LEXICON_SIZE,
   bandForRank,
   compassFor,
+  definitionOf,
+  domainOf,
   driftFrom,
   entryAt,
   hashSeed,
+  insightFor,
   lookup,
   marksFor,
   mulberry32,
   nearestWords,
   pickTarget,
   rankOf,
+  revealedOf,
   similarity,
   unlocksFor,
   UNLOCK_RANKS,
@@ -308,8 +313,23 @@ export class Round {
       marks: marksFor(g.word, target, g.rank),
       targetLength: unlocks.includes('length') ? target.length : undefined,
       compass: compassFor(g.wordIndex, this.targetIndex, g.rank),
+      insight: insightFor(g.wordIndex, this.targetIndex, g.rank),
       unlocks,
     };
+  }
+
+  /** The answer's own definition, for the end-of-round reveal. */
+  definition(): string {
+    return definitionOf(this.targetIndex);
+  }
+
+  domain(): string {
+    return domainOf(this.targetIndex);
+  }
+
+  /** Every word the answer has been, with what each one means. */
+  chainDetail(): Revealed[] {
+    return this.chain.map((i) => revealedOf(i));
   }
 
   /** The best length hint any of this player's guesses has earned. */

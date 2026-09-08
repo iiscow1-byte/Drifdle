@@ -145,8 +145,10 @@ export const config = {
   limits: {
     maxPlayersPerRoom: Number(env('MAX_PLAYERS_PER_ROOM', '8')),
     maxRooms: Number(env('MAX_ROOMS', '500')),
-    chatPerMinute: 20,
-    guessesPerMinute: 40,
+    chatPerMinute: Number(env('CHAT_PER_MINUTE', '20')),
+    // An anti-abuse ceiling, not a game rule: the per-guess cooldown is what
+    // actually paces play. Raise it for load tests or very fast custom modes.
+    guessesPerMinute: Number(env('GUESSES_PER_MINUTE', '40')),
   },
 } as const;
 

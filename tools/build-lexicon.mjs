@@ -61,11 +61,16 @@ function parseData(posName, posLetter) {
     const wordCount = parseInt(head[3], 16);
 
     const words = [];
+    let properCount = 0;
     let i = 4;
     for (let w = 0; w < wordCount; w++) {
+      // WordNet preserves capitalisation, which is the only reliable marker of
+      // a proper noun. "Paris" makes a poor answer in a word game.
+      if (/^[A-Z]/.test(head[i])) properCount++;
       words.push(head[i].toLowerCase());
       i += 2; // skip lex_id
     }
+    const proper = wordCount > 0 && properCount === wordCount;
 
     const pointerCount = Number(head[i++]);
     const hyperKeys = [];
@@ -88,7 +93,7 @@ function parseData(posName, posLetter) {
 
     const key = `${posLetter}${offset}`;
     synsetKeyToIndex.set(key, synsets.length);
-    synsets.push({ key, pos: POS_CODE[posLetter], lexFile, words, hyperKeys, gloss });
+    synsets.push({ key, pos: POS_CODE[posLetter], lexFile, words, hyperKeys, gloss, proper });
   }
 }
 
@@ -225,6 +230,7 @@ synsets.forEach((s, i) => {
 synHypOffsets[synsets.length] = synHypValues.length;
 
 const synLex = new Uint8Array(synsets.map((s) => s.lexFile));
+const synProper = new Uint8Array(synsets.map((s) => (s.proper ? 1 : 0)));
 const synPos = new Uint8Array(synsets.map((s) => s.pos));
 
 // The first word of a synset is its canonical name, used in hint text.
@@ -271,7 +277,7 @@ function pushU32(...values) {
 }
 const bytesOf = (typed) => Buffer.from(typed.buffer, typed.byteOffset, typed.byteLength);
 
-push(Buffer.from('DRFTLX04', 'ascii'));
+push(Buffer.from('DRFTLX05', 'ascii'));
 pushU32(words.length, synsets.length, wordSynValues.length, synHypValues.length);
 pushU32(wordBlob.blob.length, glossBlob.blob.length);
 
@@ -286,6 +292,7 @@ push(bytesOf(synHypOffsets));
 push(bytesOf(Uint32Array.from(synHypValues)));
 push(bytesOf(synLex));
 push(bytesOf(synPos));
+push(bytesOf(synProper));
 push(bytesOf(synHead));
 push(bytesOf(freq));
 push(bytesOf(tiers));

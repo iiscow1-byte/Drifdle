@@ -5,7 +5,8 @@ import { AuthModal } from './pages/Auth.tsx';
 import { Home } from './pages/Home.tsx';
 import { Daily } from './pages/Daily.tsx';
 import { Play } from './pages/Play.tsx';
-import { HowToPlay, Leaderboard, Profile } from './pages/Misc.tsx';
+import { Leaderboard, Profile } from './pages/Misc.tsx';
+import { HowToPlay } from './pages/HowToPlay.tsx';
 
 const NAV = [
   { key: 'daily', label: 'Daily' },

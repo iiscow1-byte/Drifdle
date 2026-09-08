@@ -17,7 +17,7 @@ export function Daily({ practice }: { practice?: boolean }) {
   const [showResult, setShowResult] = useState(false);
   const [flash, setFlash] = useState<DailyState['drifts'][number] | null>(null);
   const [rescored, setRescored] = useState(false);
-  const [lexiconSize, setLexiconSize] = useState(768);
+  const [lexiconSize, setLexiconSize] = useState(75352);
 
   useEffect(() => {
     api.rules().then((r) => setLexiconSize(r.lexiconSize)).catch(() => {});
@@ -203,6 +203,7 @@ export function Daily({ practice }: { practice?: boolean }) {
               <div className="mono" style={{ fontSize: 28, fontWeight: 700, color: 'var(--band-exact)' }}>
                 {state.target}
               </div>
+              {state.definition && <div className="reveal-definition">{state.definition}</div>}
               <button className="btn sm" style={{ marginTop: 10 }} onClick={() => setShowResult(true)}>
                 See the summary
               </button>
@@ -240,14 +241,15 @@ export function Daily({ practice }: { practice?: boolean }) {
             <h3>Reading the board</h3>
             <ul className="muted" style={{ margin: 0, paddingLeft: 18, fontSize: 13.2, lineHeight: 1.65 }}>
               <li>
-                <b>Rank</b> is how close your word is in meaning — 1 is the answer, 768 is as far as it gets.
+                <b>Rank</b> is how close your word is in meaning — 1 is the answer, {lexiconSize.toLocaleString()} is
+                as far as the lexicon goes.
               </li>
               <li>
-                Under rank 250 the answer’s <b>length</b> appears. Under 120 you start seeing <b>letters</b> in
-                the right place, and under 40, letters that are simply in the word.
+                Every guess shows <b>which sense</b> of your word was scored, so a cold answer is never a mystery.
               </li>
               <li>
-                The <b>compass</b> points along the axis you are furthest off — bigger, older, more abstract.
+                Get near and the engine names the <b>concept you share</b> with the answer — the single most
+                useful hint here. Nearer still and you unlock its category, length, definition and letters.
               </li>
             </ul>
           </div>
@@ -317,7 +319,21 @@ function ResultModal({
       <div className="summary-target">
         <div className="label">The answer was</div>
         <div className="word">{state.target}</div>
+        {state.definition && <div className="reveal-definition">{state.definition}</div>}
       </div>
+
+      {state.neighbourhood && state.neighbourhood.length > 0 && (
+        <>
+          <div className="faint" style={{ textAlign: 'center', fontSize: 11, letterSpacing: '0.1em', fontWeight: 800 }}>
+            WHAT LIVED NEXT TO IT
+          </div>
+          <div className="neighbourhood">
+            {state.neighbourhood.map((w) => (
+              <span key={w}>{w}</span>
+            ))}
+          </div>
+        </>
+      )}
 
       {chain.length > 1 && (
         <>

@@ -55,6 +55,8 @@ interface Pack {
   synHypValues: Uint32Array;
   synLex: Uint8Array;
   synPos: Uint8Array;
+  /** 1 when every word in the synset is capitalised, i.e. a proper noun. */
+  synProper: Uint8Array;
   synHead: Uint32Array;
   freq: Uint32Array;
   tiers: Uint8Array;
@@ -70,7 +72,7 @@ function decode(): Pack {
 
   let at = 0;
   const magic = Buffer.from(bytes.subarray(0, 8)).toString('ascii');
-  if (magic !== 'DRFTLX04') throw new Error(`lexicon.bin has unexpected magic "${magic}"`);
+  if (magic !== 'DRFTLX05') throw new Error(`lexicon.bin has unexpected magic "${magic}"`);
   at = 8;
 
   const u32 = () => {
@@ -126,6 +128,7 @@ function decode(): Pack {
   const synHypValues = takeU32(synHypLen);
   const synLex = takeU8(synsetCount);
   const synPos = takeU8(synsetCount);
+  const synProper = takeU8(synsetCount);
   const synHead = takeU32(synsetCount);
   const freq = takeU32(wordCount);
   const tiers = takeU8(wordCount);
@@ -143,6 +146,7 @@ function decode(): Pack {
     synHypValues,
     synLex,
     synPos,
+    synProper,
     synHead,
     freq,
     tiers,
@@ -533,9 +537,31 @@ export function marksFor(guess: string, target: string, rank: number): Mark[] {
 /* Meaning: definitions, domains, shared concepts                      */
 /* ------------------------------------------------------------------ */
 
+/**
+ * The sense a player most likely means, by corpus frequency.
+ *
+ * Using the first sense in the file would mean reading "add" as the attention
+ * disorder (nouns are parsed before verbs) — so every definition, domain and
+ * part of speech the game shows is anchored on the dominant sense instead.
+ */
+const dominantSense = new Int32Array(LEXICON_SIZE).fill(-1);
+{
+  for (let w = 0; w < LEXICON_SIZE; w++) {
+    const start = pack.wordSynOffsets[w];
+    const weights = senseWeightsFor(w);
+    let bestWeight = -1;
+    for (let i = 0; i < weights.length; i++) {
+      if (weights[i] > bestWeight) {
+        bestWeight = weights[i];
+        dominantSense[w] = pack.wordSynValues[start + i];
+      }
+    }
+  }
+}
+
 function primarySynset(word: number): number | null {
-  const start = pack.wordSynOffsets[word];
-  return start < pack.wordSynOffsets[word + 1] ? pack.wordSynValues[start] : null;
+  const s = dominantSense[word];
+  return s < 0 ? null : s;
 }
 
 export function definitionOf(word: number): string {
@@ -710,9 +736,35 @@ export function hashSeed(input: string): number {
   return h >>> 0;
 }
 
+/**
+ * Whether a word makes a fair answer.
+ *
+ * Every word in the lexicon can be *guessed*, but only nouns and verbs make
+ * good targets. WordNet gives adjectives only loose "similar to" clusters and
+ * adverbs almost nothing, so words like `false` or `upstairs` sit in a part of
+ * the space with no gradient — there is no "getting warmer" to follow, and
+ * simulated play confirmed they are effectively unsolvable. Requiring the
+ * dominant sense to be a noun or verb sitting at least three levels down the
+ * hierarchy keeps answers in the well-connected core.
+ */
+const answerable = new Uint8Array(LEXICON_SIZE);
+{
+  for (let w = 0; w < LEXICON_SIZE; w++) {
+    const dominant = dominantSense[w];
+    if (dominant < 0) continue;
+    const pos = pack.synPos[dominant];
+    // Nouns and verbs only, deep enough to have a gradient, and not a name.
+    if ((pos === 0 || pos === 1) && synDepth[dominant] >= 3 && !pack.synProper[dominant]) {
+      answerable[w] = 1;
+    }
+  }
+}
+
 /** Words eligible to be answers, by difficulty. Indexed once at boot. */
 const byTier: number[][] = [[], [], [], []];
-for (let w = 0; w < LEXICON_SIZE; w++) byTier[pack.tiers[w]].push(w);
+for (let w = 0; w < LEXICON_SIZE; w++) {
+  if (answerable[w]) byTier[pack.tiers[w]].push(w);
+}
 
 function answerPool(difficulty: 1 | 2 | 3): number[] {
   const pool: number[] = [];
@@ -753,13 +805,13 @@ export function driftFrom(
   for (let pos = DRIFT_WINDOW.min; pos < near.length; pos++) {
     const idx = near[pos];
     if (exclude.has(idx)) continue;
-    if (pack.tiers[idx] > difficulty) continue;
+    if (pack.tiers[idx] > difficulty || !answerable[idx]) continue;
     candidates.push(idx);
   }
   if (candidates.length === 0) {
     // Neighbourhood exhausted: accept any unused near word regardless of tier.
     for (let pos = 1; pos < near.length; pos++) {
-      if (!exclude.has(near[pos])) candidates.push(near[pos]);
+      if (!exclude.has(near[pos]) && answerable[near[pos]]) candidates.push(near[pos]);
     }
   }
   if (candidates.length === 0) return { index: currentIndex, similarity: 1 };
@@ -776,6 +828,7 @@ export function lexiconStats() {
   return {
     size: LEXICON_SIZE,
     synsets: SYNSET_COUNT,
+    answerable: byTier[1].length + byTier[2].length + byTier[3].length,
     tiers: { 1: byTier[1].length, 2: byTier[2].length, 3: byTier[3].length } as Record<number, number>,
     features: featureIds.length,
     buildMs,

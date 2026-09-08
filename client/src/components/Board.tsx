@@ -2,6 +2,19 @@ import { useEffect, useRef } from 'react';
 import type { Mark, PrivateGuess, PublicGuess } from '@shared/protocol.ts';
 import { BAND_LABEL, bandClass, heatFraction } from '../lib/format.ts';
 
+/** Is there anything worth drawing under the row? */
+function hasDetail(detail: PrivateGuess): boolean {
+  return Boolean(
+    detail.marks.some((m) => m !== 'hidden') ||
+      detail.compass ||
+      detail.targetLength ||
+      detail.insight?.link ||
+      detail.insight?.domain ||
+      detail.insight?.definition ||
+      detail.insight?.sense,
+  );
+}
+
 function Marks({ word, marks }: { word: string; marks: Mark[] }) {
   return (
     <div className="marks" aria-label="Letter feedback">
@@ -76,19 +89,50 @@ export function GuessRow({
         )}
       </div>
 
-      {detail && (detail.marks.some((m) => m !== 'hidden') || detail.compass) && (
+      {detail && hasDetail(detail) && (
         <div className="guess-detail">
           {detail.marks.some((m) => m !== 'hidden') && (
             <Marks word={detail.word} marks={detail.marks} />
           )}
+
+          {/* The concept the guess and the answer share: the most useful hint
+              in the game, so it leads. */}
+          {detail.insight?.link && (
+            <span className="hint link">
+              <span className="k">shared</span>
+              both are kinds of <b>{detail.insight.link}</b>
+            </span>
+          )}
+
           {detail.compass && (
-            <span className="compass">
+            <span className="hint compass">
               <span className="arrow">{detail.compass.direction > 0 ? '↑' : '↓'}</span>
               {detail.compass.text}
             </span>
           )}
-          {detail.targetLength && (
-            <span className="chip">{detail.targetLength} letters</span>
+
+          {detail.insight?.domain && (
+            <span className="hint domain">
+              <span className="k">domain</span>
+              {detail.insight.domain}
+            </span>
+          )}
+
+          {detail.targetLength && <span className="chip">{detail.targetLength} letters</span>}
+
+          {detail.insight?.definition && (
+            <span className="hint definition">
+              <span className="k">the answer</span>
+              {detail.insight.definition}
+            </span>
+          )}
+
+          {/* Which sense of YOUR word was scored. Prevents the "why is my
+              perfectly good guess cold?" frustration. */}
+          {detail.insight?.sense && (
+            <span className="sense" title={detail.insight.sense}>
+              <i>{detail.insight.pos}</i> {detail.insight.sense}
+            </span>
           )}
         </div>
       )}
