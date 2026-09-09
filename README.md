@@ -2,6 +2,8 @@
 
 **A multiplayer word game where the answer moves.**
 
+**This is the result of asking claude to "do whatever you want"**
+
 Wordle tells you about letters. Contexto tells you about meaning. Globle tells you
 which way to go. Driftle does all three — and then does something none of them do:
 when you get close, **the answer runs away.**
