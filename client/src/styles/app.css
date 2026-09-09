@@ -773,13 +773,16 @@ a:hover {
   color: var(--text-faint);
 }
 
+/* The board grows down the page rather than scrolling inside a capped box:
+   a squeezed row clips its own hints, and the hints are the game. */
 .board {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  max-height: min(58vh, 620px);
-  overflow-y: auto;
-  padding-right: 4px;
+}
+/* Rows keep their natural height no matter how many land on the board. */
+.board > .guess {
+  flex: none;
 }
 .board.empty {
   align-items: center;
@@ -1401,8 +1404,8 @@ a:hover {
 .embedded .hero {
   padding: 24px 12px 20px;
 }
-.embedded .board {
-  max-height: 42vh;
+.embedded .guess {
+  padding: 8px 10px;
 }
 
 .hide-sm {

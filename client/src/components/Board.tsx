@@ -166,9 +166,11 @@ export function Board({
   const scroller = useRef<HTMLDivElement>(null);
   const lastCount = useRef(board.length);
 
+  // The board runs off the bottom of the page, so a newly landed row is
+  // brought into view by scrolling the page, not the list.
   useEffect(() => {
     if (sortBy === 'time' && board.length > lastCount.current) {
-      scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: 'smooth' });
+      scroller.current?.lastElementChild?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
     lastCount.current = board.length;
   }, [board.length, sortBy]);
